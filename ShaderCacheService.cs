@@ -44,10 +44,25 @@ public sealed class ShaderCacheService
                 if (drive.AvailableFreeSpace < item.Bytes) { fail++; continue; }
                 var target = Path.Combine(targetRoot, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(item.Path))).Substring(0, 12));
                 if (Directory.Exists(target) || File.Exists(target)) { fail++; continue; }
-                Directory.Move(item.Path, target);
-                Directory.CreateDirectory(Path.GetDirectoryName(item.Path)!);
-                if (!CreateJunction(item.Path, target)) { Directory.Move(target, item.Path); fail++; continue; }
-                if (!Directory.Exists(item.Path)) { RemoveJunction(item.Path); Directory.Move(target, item.Path); fail++; continue; }
+                var backup = item.Path.TrimEnd(Path.DirectorySeparatorChar) + ".cdrive-backup";
+                if (Directory.Exists(backup)) { fail++; continue; }
+                Directory.Move(item.Path, backup);
+                try
+                {
+                    CopyDirectory(backup, target);
+                    if (Size(backup) != Size(target)) throw new IOException("缓存复制校验失败");
+                    Directory.CreateDirectory(Path.GetDirectoryName(item.Path)!);
+                    if (!CreateJunction(item.Path, target)) throw new IOException("目录联接创建失败");
+                    if (!Directory.Exists(item.Path)) throw new IOException("原路径验证失败");
+                    Directory.Delete(backup, true);
+                }
+                catch
+                {
+                    if (Directory.Exists(item.Path)) RemoveJunction(item.Path);
+                    if (Directory.Exists(target)) Directory.Delete(target, true);
+                    if (Directory.Exists(backup)) Directory.Move(backup, item.Path);
+                    throw;
+                }
                 mappings[item.Path] = target; ok++;
             }
             catch { fail++; }
@@ -59,7 +74,15 @@ public sealed class ShaderCacheService
     {
         var map = Load(); int ok = 0, fail = 0;
         foreach (var pair in map.ToArray())
-            try { RemoveJunction(pair.Key); Directory.Move(pair.Value, pair.Key); map.Remove(pair.Key); ok++; }
+            try
+            {
+                if (!Directory.Exists(pair.Value)) throw new DirectoryNotFoundException(pair.Value);
+                RemoveJunction(pair.Key);
+                CopyDirectory(pair.Value, pair.Key);
+                if (Size(pair.Key) != Size(pair.Value)) throw new IOException("恢复校验失败");
+                Directory.Delete(pair.Value, true);
+                map.Remove(pair.Key); ok++;
+            }
             catch { fail++; }
         Save(map); return new(ok, fail);
     }
@@ -69,6 +92,12 @@ public sealed class ShaderCacheService
         var p = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") { UseShellExecute = false, CreateNoWindow = true }); p?.WaitForExit(); return p?.ExitCode == 0;
     }
     private static void RemoveJunction(string path) => Directory.Delete(path);
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)), false);
+        foreach (var dir in Directory.EnumerateDirectories(source)) CopyDirectory(dir, Path.Combine(target, Path.GetFileName(dir)));
+    }
     private static long Size(string path) => Directory.EnumerateFiles(path, "*", System.IO.SearchOption.AllDirectories).Sum(f => { try { return new FileInfo(f).Length; } catch { return 0; } });
     private Dictionary<string, string> Load() => File.Exists(_state) ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_state)) ?? new() : new();
     private void Save(Dictionary<string, string> map) { Directory.CreateDirectory(Path.GetDirectoryName(_state)!); File.WriteAllText(_state, JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true })); }
