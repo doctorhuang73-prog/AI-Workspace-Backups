@@ -8,5 +8,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CDriveCleaner</AssemblyName>
     <RootNamespace>CDriveCleaner</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 </Project>
